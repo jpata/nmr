@@ -616,7 +616,7 @@ def train_nmrtrans(df):
             model.eval()
             epoch_val_loss = 0.0
             with torch.no_grad():
-                for batch in val_loader:
+                for batch_idx, batch in enumerate(val_loader):
                     h1_x = batch["1H"].to(device)
                     c13_x = batch["13C"].to(device)
                     h1_mask = (h1_x.sum(dim=-1) == 0).to(device)
@@ -641,8 +641,28 @@ def train_nmrtrans(df):
                     logits_flat = logits.reshape(-1, logits.size(-1))
                     tgt_expected_flat = tgt_expected.reshape(-1)
                     loss = criterion(logits_flat, tgt_expected_flat)
-                    print(loss)
                     epoch_val_loss += loss.item()
+
+                    # Print generated vs true SMILES for first few elements of first validation batch
+                    if batch_idx == 0:
+                        print(f"\n--- Validation Batch {batch_idx} (Epoch {epoch+1}) ---")
+                        
+                        # Generate predictions
+                        predictions = logits.argmax(dim=-1)
+                        
+                        # Decode true and predicted SMILES for first few samples
+                        num_samples_to_show = min(3, batch_size)
+                        for i in range(num_samples_to_show):
+                            true_tokens = tgt_expected[i]
+                            pred_tokens = predictions[i]
+                            
+                            true_smiles = tokenizer.decode(true_tokens)
+                            pred_smiles = tokenizer.decode(pred_tokens)
+                            
+                            print(f"Sample {i+1}:")
+                            print(f"  True SMILES:  {true_smiles}")
+                            print(f"  Pred SMILES:  {pred_smiles}")
+                            print()
 
             print(f"Fold {fold+1} | Epoch {epoch+1} | Train Loss: {epoch_train_loss/len(train_loader):.4f} | Val Loss: {epoch_val_loss/len(val_loader):.4f}")
 
