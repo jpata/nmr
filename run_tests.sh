@@ -20,6 +20,13 @@ MODEL_LAYERS_EXIT=$?
 
 echo ""
 echo "=========================================="
+echo "Running Tokenizer Tests..."
+echo "=========================================="
+singularity exec --nv $IMG python3 test_tokenizer.py
+TOKENIZER_EXIT=$?
+
+echo ""
+echo "=========================================="
 echo "Test Summary"
 echo "=========================================="
 
@@ -35,8 +42,14 @@ else
     echo "✗ Model Layer Tests: FAILED"
 fi
 
+if [ $TOKENIZER_EXIT -eq 0 ]; then
+    echo "✓ Tokenizer Tests: PASSED"
+else
+    echo "✗ Tokenizer Tests: FAILED"
+fi
+
 # Overall exit code
-if [ $DATA_LOADING_EXIT -eq 0 ] && [ $MODEL_LAYERS_EXIT -eq 0 ]; then
+if [ $DATA_LOADING_EXIT -eq 0 ] && [ $MODEL_LAYERS_EXIT -eq 0 ] && [ $TOKENIZER_EXIT -eq 0 ]; then
     echo ""
     echo "✓✓✓ ALL TESTS PASSED! ✓✓✓"
     exit 0
