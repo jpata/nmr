@@ -416,14 +416,9 @@ class NMRTrans(nn.Module):
         seq_length = smiles_tgt.size(1)
         positions = torch.arange(0, seq_length, device=smiles_tgt.device).unsqueeze(0)
 
-        # DEBUG: Log device information
-        print(f"DEBUG: smiles_tgt device: {smiles_tgt.device}, positions device: {positions.device}")
-        print(f"DEBUG: smiles_embedding device: {self.smiles_embedding.weight.device}")
-        print(f"DEBUG: target_pos_enc device: {self.target_pos_enc.weight.device}")
-
         # Check that all token IDs are within vocabulary bounds
         vocab_size = self.smiles_embedding.num_embeddings
-        print(f"DEBUG: Checking token IDs - vocab_size: {vocab_size}, min: {smiles_tgt.min().item()}, max: {smiles_tgt.max().item()}")
+        # print(f"DEBUG: Checking token IDs - vocab_size: {vocab_size}, min: {smiles_tgt.min().item()}, max: {smiles_tgt.max().item()}")
         
         if (smiles_tgt >= vocab_size).any():
             invalid_tokens = smiles_tgt >= vocab_size
@@ -442,10 +437,10 @@ class NMRTrans(nn.Module):
         positions = positions.to(self.target_pos_enc.weight.device)
         
         # DEBUG: Check embedding table size and token indices
-        print(f"DEBUG: Embedding table size: {self.smiles_embedding.num_embeddings}")
-        print(f"DEBUG: Token indices range: [{smiles_tgt.min().item()}, {smiles_tgt.max().item()}]")
-        print(f"DEBUG: Positions range: [{positions.min().item()}, {positions.max().item()}]")
-        print(f"DEBUG: Position encoding table size: {self.target_pos_enc.num_embeddings}")
+        # print(f"DEBUG: Embedding table size: {self.smiles_embedding.num_embeddings}")
+        # print(f"DEBUG: Token indices range: [{smiles_tgt.min().item()}, {smiles_tgt.max().item()}]")
+        # print(f"DEBUG: Positions range: [{positions.min().item()}, {positions.max().item()}]")
+        # print(f"DEBUG: Position encoding table size: {self.target_pos_enc.num_embeddings}")
         
         # Check for any tokens that might be out of bounds
         if smiles_tgt.max().item() >= self.smiles_embedding.num_embeddings:
@@ -639,10 +634,10 @@ def train_nmrtrans(df):
                     continue
 
                 # DEBUG: Check tensor shapes
-                if batch_idx == 0 or batch_idx % 10 == 0:
-                    print(f"Batch {batch_idx}: h1_x shape: {h1_x.shape}, c13_x shape: {c13_x.shape}, smiles_tgt shape: {smiles_tokens.shape}")
-                    print(f"Batch {batch_idx}: h1_mask shape: {h1_mask.shape}, c13_mask shape: {c13_mask.shape}")
-                    print(f"Batch {batch_idx}: Device - h1_x: {h1_x.device}, c13_x: {c13_x.device}, smiles_tokens: {smiles_tokens.device}")
+                # if batch_idx == 0 or batch_idx % 10 == 0:
+                #     print(f"Batch {batch_idx}: h1_x shape: {h1_x.shape}, c13_x shape: {c13_x.shape}, smiles_tgt shape: {smiles_tokens.shape}")
+                #     print(f"Batch {batch_idx}: h1_mask shape: {h1_mask.shape}, c13_mask shape: {c13_mask.shape}")
+                #     print(f"Batch {batch_idx}: Device - h1_x: {h1_x.device}, c13_x: {c13_x.device}, smiles_tokens: {smiles_tokens.device}")
 
                 # DEBUG: Check for NaN/Inf in inputs
                 if torch.isnan(h1_x).any():
