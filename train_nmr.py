@@ -442,6 +442,56 @@ class NMRTrans(nn.Module):
 
 import torch.optim as optim
 
+# Tensor shape logging hook
+class TensorShapeLogger:
+    """Hook-based tensor shape logger for debugging."""
+    
+    def __init__(self, enabled=False):
+        self.enabled = enabled
+        self.hook_handles = []
+        
+    def enable(self):
+        """Enable tensor shape logging."""
+        self.enabled = True
+        
+    def disable(self):
+        """Disable tensor shape logging."""
+        self.enabled = False
+        
+    def register_module(self, module, name=None):
+        """Register a module to log input/output shapes."""
+        if name is None:
+            name = module.__class__.__name__
+            
+        def hook_fn(module, input, output):
+            if not self.enabled:
+                return
+            
+            input_shapes = [t.shape if isinstance(t, torch.Tensor) else 'None' for t in input]
+            output_shapes = [t.shape if isinstance(t, torch.Tensor) else 'None' for t in output]
+            
+            print(f"[{name}]")
+            print(f"  Input shapes:  {input_shapes}")
+            print(f"  Output shapes: {output_shapes}")
+            print()
+            
+        handle = module.register_forward_hook(hook_fn)
+        self.hook_handles.append(handle)
+        
+    def register_all_modules(self, model):
+        """Register hooks for all modules in a model."""
+        for name, module in model.named_modules():
+            self.register_module(module, name)
+            
+    def clear_hooks(self):
+        """Remove all registered hooks."""
+        for handle in self.hook_handles:
+            handle.remove()
+        self.hook_handles = []
+
+# Global tensor shape logger instance
+tensor_shape_logger = TensorShapeLogger(enabled=False)
+
 # Assume NMRTrans and DataLoader are defined as we discussed previously
 # from model import NMRTrans
 # from data import get_dataloader
@@ -450,11 +500,23 @@ def train_nmrtrans(df):
     # --- 1. Setup & Hyperparameters ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Vocabulary setup (based on the paper's custom tokenizer) [cite: 244, 245, 248]
-    VOCAB_SIZE = 500  
-    PAD_IDX = 0
-    BOS_IDX = 1
-    EOS_IDX = 2
+    # --- Build vocabulary first ---
+    print("Building vocabulary from training data...")
+    global tokenizer
+    
+    # First pass: build complete vocabulary
+    smiles_unique = df["SMILES"].unique()
+    for smiles in smiles_unique:
+        tokenizer.encode(smiles, update_vocab=True)
+    
+    # Determine vocabulary size
+    VOCAB_SIZE = len(tokenizer.vocab2id)
+    PAD_IDX = tokenizer.vocab2id[tokenizer.PAD_TOKEN]
+    BOS_IDX = tokenizer.vocab2id[tokenizer.BOS_TOKEN]
+    EOS_IDX = tokenizer.vocab2id[tokenizer.EOS_TOKEN]
+    
+    print(f"Vocabulary size: {VOCAB_SIZE}")
+    print(f"PAD_IDX: {PAD_IDX}, BOS_IDX: {BOS_IDX}, EOS_IDX: {EOS_IDX}")
 
     # Cross-entropy loss, ignoring the padding tokens [cite: 254]
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
@@ -493,8 +555,11 @@ def train_nmrtrans(df):
         # Initialize model and optimizer for each fold
         model = NMRTrans(vocab_size=VOCAB_SIZE).to(device)
         optimizer = optim.AdamW(model.parameters(), lr=1e-4)
+        
+        # Register tensor shape logging hooks (optional - enable with tensor_shape_logger.enable())
+        tensor_shape_logger.register_all_modules(model)
 
-        num_epochs = 10 # Reduced for demonstration, change as needed
+        num_epochs = 10
 
         for epoch in range(num_epochs):
             # --- Training Phase ---
@@ -584,6 +649,21 @@ def train_nmrtrans(df):
     print("\n--- Cross-Validation Completed ---")
 
 if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Train NMRTrans model")
+    parser.add_argument("--debug-shapes", action="store_true", 
+                       help="Enable tensor shape logging at each step")
+    
+    args = parser.parse_args()
+    
+    # Enable tensor shape logging if debug flag is set
+    if args.debug_shapes:
+        tensor_shape_logger.enable()
+        print("Tensor shape logging ENABLED")
+    else:
+        tensor_shape_logger.disable()
+    
     df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
-    df = df_big.head(10000)
+    df = df_big.head(1000)
     train_nmrtrans(df)
