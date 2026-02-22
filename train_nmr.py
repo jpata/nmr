@@ -190,11 +190,7 @@ class SMILESTokenizer:
         return "".join(tokens)
 
 
-from torch.nn.utils.rnn import pad_sequence
-
-tokenizer = SMILESTokenizer()
-
-def nmr_collate_fn(batch):
+def nmr_collate_fn(batch, tokenizer):
     h1_list = []
     c13_list = []
     smiles_tensors = []
@@ -230,14 +226,14 @@ def nmr_collate_fn(batch):
     }
 
 
-def get_dataloader(df):
+def get_dataloader(df, tokenizer):
     dataset = NMRDataset(df)
 
     dataloader = DataLoader(
         dataset,
         batch_size=16,
         shuffle=True,
-        collate_fn=nmr_collate_fn,
+        collate_fn=lambda batch: nmr_collate_fn(batch, tokenizer),
         #num_workers=4
     )
     return dataloader
@@ -419,7 +415,57 @@ class NMRTrans(nn.Module):
         # Embed the SMILES sequence and add positional ordering
         seq_length = smiles_tgt.size(1)
         positions = torch.arange(0, seq_length, device=smiles_tgt.device).unsqueeze(0)
+
+        # DEBUG: Log device information
+        print(f"DEBUG: smiles_tgt device: {smiles_tgt.device}, positions device: {positions.device}")
+        print(f"DEBUG: smiles_embedding device: {self.smiles_embedding.weight.device}")
+        print(f"DEBUG: target_pos_enc device: {self.target_pos_enc.weight.device}")
+
+        # Check that all token IDs are within vocabulary bounds
+        vocab_size = self.smiles_embedding.num_embeddings
+        print(f"DEBUG: Checking token IDs - vocab_size: {vocab_size}, min: {smiles_tgt.min().item()}, max: {smiles_tgt.max().item()}")
+        
+        if (smiles_tgt >= vocab_size).any():
+            invalid_tokens = smiles_tgt >= vocab_size
+            print(f"ERROR: Found {invalid_tokens.sum()} tokens >= vocab_size!")
+            print(f"Sample invalid tokens: {smiles_tgt[invalid_tokens][:10]}")
+            # Clamp to valid range to prevent embedding lookup errors
+            smiles_tgt = torch.clamp(smiles_tgt, 0, vocab_size - 1)
+        
+        if (smiles_tgt < 0).any():
+            invalid_tokens = smiles_tgt < 0
+            print(f"ERROR: Found {invalid_tokens.sum()} negative token IDs!")
+            print(f"Sample negative tokens: {smiles_tgt[invalid_tokens][:10]}")
+            raise ValueError("Negative token IDs detected")
+        
+        # Ensure positions are on the same device as the positional encoding
+        positions = positions.to(self.target_pos_enc.weight.device)
+        
+        # DEBUG: Check embedding table size and token indices
+        print(f"DEBUG: Embedding table size: {self.smiles_embedding.num_embeddings}")
+        print(f"DEBUG: Token indices range: [{smiles_tgt.min().item()}, {smiles_tgt.max().item()}]")
+        print(f"DEBUG: Positions range: [{positions.min().item()}, {positions.max().item()}]")
+        print(f"DEBUG: Position encoding table size: {self.target_pos_enc.num_embeddings}")
+        
+        # Check for any tokens that might be out of bounds
+        if smiles_tgt.max().item() >= self.smiles_embedding.num_embeddings:
+            print(f"ERROR: Token index {smiles_tgt.max().item()} exceeds embedding table size {self.smiles_embedding.num_embeddings}")
+            print(f"All token indices: {smiles_tgt.flatten()[:50]}")  # First 50 tokens
+            raise ValueError("Token index out of bounds")
+        
+        if positions.max().item() >= self.target_pos_enc.num_embeddings:
+            print(f"ERROR: Position index {positions.max().item()} exceeds position encoding table size {self.target_pos_enc.num_embeddings}")
+            raise ValueError("Position index out of bounds")
+        
         tgt_emb = self.smiles_embedding(smiles_tgt) + self.target_pos_enc(positions)
+        
+        # DEBUG: Check for NaN/Inf after embedding
+        if torch.isnan(tgt_emb).any():
+            print(f"DEBUG: NaN detected in tgt_emb after embedding")
+            print(f"DEBUG: smiles_embedding output stats: min={self.smiles_embedding(smiles_tgt).min()}, max={self.smiles_embedding(smiles_tgt).max()}")
+            print(f"DEBUG: target_pos_enc output stats: min={self.target_pos_enc(positions).min()}, max={self.target_pos_enc(positions).max()}")
+        if torch.isinf(tgt_emb).any():
+            print(f"DEBUG: Inf detected in tgt_emb after embedding")
 
         # Cross-Attention Interface:
         # Notice we do NOT add any positional encodings to H_enc (the memory).
@@ -502,9 +548,16 @@ def train_nmrtrans(df):
 
     # --- Build vocabulary first ---
     print("Building vocabulary from training data...")
-    global tokenizer
     
-    # First pass: build complete vocabulary
+    # Create a new tokenizer instance for this training run
+    tokenizer = SMILESTokenizer()
+    
+    # Reset tokenizer vocabulary to only special tokens before building from dataset
+    # This ensures a clean vocabulary for each training run
+    tokenizer.vocab2id = {token: idx for idx, token in enumerate(tokenizer.special_tokens)}
+    tokenizer.id2vocab = {idx: token for token, idx in tokenizer.vocab2id.items()}
+    
+    # First pass: build complete vocabulary from the full dataset
     smiles_unique = df["SMILES"].unique()
     for smiles in smiles_unique:
         tokenizer.encode(smiles, update_vocab=True)
@@ -517,6 +570,11 @@ def train_nmrtrans(df):
     
     print(f"Vocabulary size: {VOCAB_SIZE}")
     print(f"PAD_IDX: {PAD_IDX}, BOS_IDX: {BOS_IDX}, EOS_IDX: {EOS_IDX}")
+
+    # Print the vocabulary
+    print("\nVocabulary:")
+    for token_id, token in sorted(tokenizer.id2vocab.items()):
+        print(f"  {token_id}: {token}")
 
     # Cross-entropy loss, ignoring the padding tokens [cite: 254]
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
@@ -549,11 +607,12 @@ def train_nmrtrans(df):
         train_df = df[df["SMILES"].isin(train_smiles)]
         val_df = df[df["SMILES"].isin(val_smiles)]
 
-        train_loader = get_dataloader(train_df)
-        val_loader = get_dataloader(val_df)
+        train_loader = get_dataloader(train_df, tokenizer)
+        val_loader = get_dataloader(val_df, tokenizer)
 
         # Initialize model and optimizer for each fold
-        model = NMRTrans(vocab_size=VOCAB_SIZE).to(device)
+        # Increase max_smiles_len to accommodate longer sequences (found up to 167 tokens)
+        model = NMRTrans(vocab_size=VOCAB_SIZE, max_smiles_len=200).to(device)
         optimizer = optim.AdamW(model.parameters(), lr=1e-4)
         
         # Register tensor shape logging hooks (optional - enable with tensor_shape_logger.enable())
@@ -574,6 +633,39 @@ def train_nmrtrans(df):
                 smiles_tokens = batch["SMILES_TOKENS"].to(device)
                 batch_size = smiles_tokens.size(0)
 
+                # DEBUG: Check for empty batches
+                if h1_x.size(0) == 0 or c13_x.size(0) == 0:
+                    print(f"Warning: Empty batch detected at batch_idx {batch_idx}")
+                    continue
+
+                # DEBUG: Check tensor shapes
+                if batch_idx == 0 or batch_idx % 10 == 0:
+                    print(f"Batch {batch_idx}: h1_x shape: {h1_x.shape}, c13_x shape: {c13_x.shape}, smiles_tgt shape: {smiles_tokens.shape}")
+                    print(f"Batch {batch_idx}: h1_mask shape: {h1_mask.shape}, c13_mask shape: {c13_mask.shape}")
+                    print(f"Batch {batch_idx}: Device - h1_x: {h1_x.device}, c13_x: {c13_x.device}, smiles_tokens: {smiles_tokens.device}")
+
+                # DEBUG: Check for NaN/Inf in inputs
+                if torch.isnan(h1_x).any():
+                    print(f"NaN detected in h1_x at batch {batch_idx}")
+                    print(f"h1_x stats: min={h1_x.min()}, max={h1_x.max()}")
+                    break
+                if torch.isinf(h1_x).any():
+                    print(f"Inf detected in h1_x at batch {batch_idx}")
+                    break
+                if torch.isnan(c13_x).any():
+                    print(f"NaN detected in c13_x at batch {batch_idx}")
+                    print(f"c13_x stats: min={c13_x.min()}, max={c13_x.max()}")
+                    break
+                if torch.isinf(c13_x).any():
+                    print(f"Inf detected in c13_x at batch {batch_idx}")
+                    break
+                if torch.isnan(smiles_tokens).any():
+                    print(f"NaN detected in smiles_tokens at batch {batch_idx}")
+                    break
+                if torch.isinf(smiles_tokens).any():
+                    print(f"Inf detected in smiles_tokens at batch {batch_idx}")
+                    break
+
                 tgt_input = smiles_tokens[:, :-1]
                 tgt_expected = smiles_tokens[:, 1:]
                 tgt_seq_len = tgt_input.size(1)
@@ -588,6 +680,15 @@ def train_nmrtrans(df):
                     smiles_tgt=tgt_input,
                     smiles_tgt_mask=tgt_causal_mask
                 )
+
+                # DEBUG: Check for NaN/Inf in logits
+                if torch.isnan(logits).any():
+                    print(f"NaN detected in logits at batch {batch_idx}")
+                    print(f"logits stats: min={logits.min()}, max={logits.max()}")
+                    break
+                if torch.isinf(logits).any():
+                    print(f"Inf detected in logits at batch {batch_idx}")
+                    break
 
                 logits_flat = logits.reshape(-1, logits.size(-1))
                 tgt_expected_flat = tgt_expected.reshape(-1)
@@ -624,6 +725,25 @@ def train_nmrtrans(df):
                     smiles_tokens = batch["SMILES_TOKENS"].to(device)
                     batch_size = smiles_tokens.size(0)
 
+                    # DEBUG: Check for empty batches
+                    if h1_x.size(0) == 0 or c13_x.size(0) == 0:
+                        print(f"Warning: Empty batch detected in validation at batch_idx {batch_idx}")
+                        continue
+
+                    # DEBUG: Check for NaN/Inf in inputs
+                    if torch.isnan(h1_x).any():
+                        print(f"NaN detected in validation h1_x at batch {batch_idx}")
+                        break
+                    if torch.isinf(h1_x).any():
+                        print(f"Inf detected in validation h1_x at batch {batch_idx}")
+                        break
+                    if torch.isnan(c13_x).any():
+                        print(f"NaN detected in validation c13_x at batch {batch_idx}")
+                        break
+                    if torch.isinf(c13_x).any():
+                        print(f"Inf detected in validation c13_x at batch {batch_idx}")
+                        break
+
                     tgt_input = smiles_tokens[:, :-1]
                     tgt_expected = smiles_tokens[:, 1:]
                     tgt_seq_len = tgt_input.size(1)
@@ -637,6 +757,14 @@ def train_nmrtrans(df):
                         smiles_tgt=tgt_input,
                         smiles_tgt_mask=tgt_causal_mask
                     )
+
+                    # DEBUG: Check for NaN/Inf in logits
+                    if torch.isnan(logits).any():
+                        print(f"NaN detected in validation logits at batch {batch_idx}")
+                        break
+                    if torch.isinf(logits).any():
+                        print(f"Inf detected in validation logits at batch {batch_idx}")
+                        break
 
                     logits_flat = logits.reshape(-1, logits.size(-1))
                     tgt_expected_flat = tgt_expected.reshape(-1)
@@ -685,5 +813,5 @@ if __name__ == "__main__":
         tensor_shape_logger.disable()
     
     df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
-    df = df_big.head(1000)
+    df = df_big.head(10000)
     train_nmrtrans(df)

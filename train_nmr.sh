@@ -7,6 +7,6 @@
 IMG=/home/software/singularity/pytorch.simg\:2026-02-04
 
 cd ~/nmr
-apptainer exec --nv $IMG python3 train_nmr.py
+apptainer exec --env CUDA_LAUNCH_BLOCKING=1 --nv $IMG python3 train_nmr.py
 
 
