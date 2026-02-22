@@ -310,7 +310,7 @@ def test_dataloader():
     dataloader = get_dataloader(df)
     
     # Test case 1: Check dataloader properties
-    assert dataloader.batch_size == 32, f"Expected batch_size 32, got {dataloader.batch_size}"
+    assert dataloader.batch_size == 16, f"Expected batch_size 16, got {dataloader.batch_size}"
     # Note: shuffle is a parameter passed to DataLoader, not an attribute
     print("  ✓ Dataloader has correct properties")
     

@@ -235,7 +235,7 @@ def get_dataloader(df):
 
     dataloader = DataLoader(
         dataset,
-        batch_size=32,
+        batch_size=16,
         shuffle=True,
         collate_fn=nmr_collate_fn,
         #num_workers=4
@@ -312,7 +312,7 @@ class NMRTransPretextEncoder(nn.Module):
     Unified Set Transformer Encoder outputting both equivariant and invariant representations 
     for different self-supervised pretext tasks.
     """
-    def __init__(self, d_model=256, num_heads=8, num_layers=6, m_inducing_points=32, k_seeds=4):
+    def __init__(self, d_model=256, num_heads=8, num_layers=2, m_inducing_points=32, k_seeds=4):
         super().__init__()
         # Stack of L ISAB layers
         self.isab_layers = nn.ModuleList([
@@ -348,7 +348,7 @@ class NMRTransPretextEncoder(nn.Module):
 
 class NMRModalEncoder(nn.Module):
     """Encodes a single NMR modality into peak-level (Z) and global (G) representations."""
-    def __init__(self, d_input, d_model=256, num_heads=8, num_layers=6, m_inducing=32, k_seeds=4):
+    def __init__(self, d_input, d_model=256, num_heads=8, num_layers=2, m_inducing=32, k_seeds=4):
         super().__init__()
         self.input_proj = nn.Linear(d_input, d_model) # Project raw features to d_model
 
@@ -386,7 +386,7 @@ class NMRTrans(nn.Module):
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=d_model, nhead=8, dim_feedforward=d_model*4, batch_first=True
         )
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=2)
 
         self.fc_out = nn.Linear(d_model, vocab_size)
 
@@ -410,8 +410,10 @@ class NMRTrans(nn.Module):
         # Combine masks for cross-attention. 
         # The 'G' tokens (k_seeds) are always valid (unmasked = False).
         # The 'Z' tokens use the original padding masks from the dataloader.
+        # Note: memory_key_padding_mask should be True where we want to mask (ignore) tokens.
+        # The dataloader masks are True where there IS data, so we need to invert them.
         g_mask = torch.zeros((batch_size, G_C.size(1)), dtype=torch.bool, device=h1_x.device)
-        memory_mask = torch.cat([g_mask, c13_mask, g_mask, h1_mask], dim=1)
+        memory_mask = torch.cat([g_mask, ~c13_mask, g_mask, ~h1_mask], dim=1)
 
         # --- DECODING ---
         # Embed the SMILES sequence and add positional ordering
@@ -423,11 +425,15 @@ class NMRTrans(nn.Module):
         # Notice we do NOT add any positional encodings to H_enc (the memory).
         # This explicitly removes positional bias, ensuring attention weights 
         # depend solely on chemical content compatibility, making it permutation invariant.
+        
+
+        
         out = self.decoder(
             tgt=tgt_emb, 
             memory=H_enc, 
             tgt_mask=smiles_tgt_mask,           # Causal mask to prevent looking ahead in SMILES
-            memory_key_padding_mask=memory_mask # Ignores padded spectral zeros
+            memory_key_padding_mask=memory_mask, # Ignores padded spectral zeros
+            tgt_is_causal=True  # Explicitly tell the decoder this is a causal mask
         )
 
         logits = self.fc_out(out)
@@ -463,10 +469,12 @@ def train_nmrtrans(df):
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
     # --- 2. Causal Masking Helper ---
-    def generate_square_subsequent_mask(sz):
+    def generate_square_subsequent_mask(sz, batch_size):
         """Prevents the decoder from looking ahead at future SMILES tokens."""
         mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
         mask = mask.float().masked_fill(mask == 0, float("-inf")).masked_fill(mask == 1, float(0.0))
+        # Expand to batch dimension
+        mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
         return mask.to(device)
 
     # --- 3. Cross-Validation Loop ---
@@ -499,11 +507,12 @@ def train_nmrtrans(df):
                 h1_mask = (h1_x.sum(dim=-1) == 0).to(device)
                 c13_mask = (c13_x.sum(dim=-1) == 0).to(device)
                 smiles_tokens = batch["SMILES_TOKENS"].to(device)
+                batch_size = smiles_tokens.size(0)
 
                 tgt_input = smiles_tokens[:, :-1]
                 tgt_expected = smiles_tokens[:, 1:]
                 tgt_seq_len = tgt_input.size(1)
-                tgt_causal_mask = generate_square_subsequent_mask(tgt_seq_len)
+                tgt_causal_mask = generate_square_subsequent_mask(tgt_seq_len, batch_size)
 
                 optimizer.zero_grad()
                 logits = model(
@@ -520,6 +529,19 @@ def train_nmrtrans(df):
                 loss = criterion(logits_flat, tgt_expected_flat)
                 
                 loss.backward()
+                
+                # Check for NaN gradients
+                has_nan = False
+                for name, param in model.named_parameters():
+                    if param.grad is not None and torch.isnan(param.grad).any():
+                        print(f"NaN gradient detected in {name}")
+                        has_nan = True
+                        break
+                
+                if has_nan:
+                    print("Stopping training due to NaN gradients")
+                    break
+                
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
 
@@ -535,11 +557,12 @@ def train_nmrtrans(df):
                     h1_mask = (h1_x.sum(dim=-1) == 0).to(device)
                     c13_mask = (c13_x.sum(dim=-1) == 0).to(device)
                     smiles_tokens = batch["SMILES_TOKENS"].to(device)
+                    batch_size = smiles_tokens.size(0)
 
                     tgt_input = smiles_tokens[:, :-1]
                     tgt_expected = smiles_tokens[:, 1:]
                     tgt_seq_len = tgt_input.size(1)
-                    tgt_causal_mask = generate_square_subsequent_mask(tgt_seq_len)
+                    tgt_causal_mask = generate_square_subsequent_mask(tgt_seq_len, batch_size)
 
                     logits = model(
                         h1_x=h1_x,
@@ -553,6 +576,7 @@ def train_nmrtrans(df):
                     logits_flat = logits.reshape(-1, logits.size(-1))
                     tgt_expected_flat = tgt_expected.reshape(-1)
                     loss = criterion(logits_flat, tgt_expected_flat)
+                    print(loss)
                     epoch_val_loss += loss.item()
 
             print(f"Fold {fold+1} | Epoch {epoch+1} | Train Loss: {epoch_train_loss/len(train_loader):.4f} | Val Loss: {epoch_val_loss/len(val_loader):.4f}")
@@ -561,5 +585,5 @@ def train_nmrtrans(df):
 
 if __name__ == "__main__":
     df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
-    df = df_big.head(50000)
+    df = df_big.head(10000)
     train_nmrtrans(df)

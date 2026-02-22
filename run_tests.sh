@@ -1,23 +1,47 @@
 #!/bin/bash
-# Script to run tests inside singularity container
+# Script to run all tests inside singularity container
 
 IMG="/home/software/singularity/pytorch.simg:2026-02-04"
 
 cd /home/joosep/nmr
 
-echo "Running tests inside singularity container..."
+echo "=========================================="
+echo "Running Data Loading Tests..."
+echo "=========================================="
 singularity exec --nv $IMG python3 test_data_loading.py
-
-# Capture exit code
-EXIT_CODE=$?
+DATA_LOADING_EXIT=$?
 
 echo ""
-echo "Exit code: $EXIT_CODE"
+echo "=========================================="
+echo "Running Model Layer Tests..."
+echo "=========================================="
+singularity exec --nv $IMG python3 test_model_layers.py
+MODEL_LAYERS_EXIT=$?
 
-if [ $EXIT_CODE -eq 0 ]; then
-    echo "✓ Tests passed successfully!"
+echo ""
+echo "=========================================="
+echo "Test Summary"
+echo "=========================================="
+
+if [ $DATA_LOADING_EXIT -eq 0 ]; then
+    echo "✓ Data Loading Tests: PASSED"
 else
-    echo "✗ Tests failed!"
+    echo "✗ Data Loading Tests: FAILED"
 fi
 
-exit $EXIT_CODE
+if [ $MODEL_LAYERS_EXIT -eq 0 ]; then
+    echo "✓ Model Layer Tests: PASSED"
+else
+    echo "✗ Model Layer Tests: FAILED"
+fi
+
+# Overall exit code
+if [ $DATA_LOADING_EXIT -eq 0 ] && [ $MODEL_LAYERS_EXIT -eq 0 ]; then
+    echo ""
+    echo "✓✓✓ ALL TESTS PASSED! ✓✓✓"
+    exit 0
+else
+    echo ""
+    echo "✗✗✗ SOME TESTS FAILED! ✗✗✗"
+    exit 1
+fi

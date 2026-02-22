@@ -1,6 +1,6 @@
-# Testing Guide for NMR Data Loading
+# Testing Guide for NMR Data Loading and Model Layers
 
-This document describes how to run the standalone tests for the data loading functionality in `train_nmr.py`.
+This document describes how to run the standalone tests for both data loading functionality and model layers in `train_nmr.py`.
 
 ## Running Tests
 
@@ -21,16 +21,31 @@ This script will:
 
 You can also run the tests manually inside the singularity container:
 
+**Run Data Loading Tests:**
 ```bash
 cd /home/joosep/nmr
 singularity exec /home/software/singularity/pytorch.simg:2026-02-04 python3 test_data_loading.py
 ```
 
+**Run Model Layer Tests:**
+```bash
+cd /home/joosep/nmr
+singularity exec /home/software/singularity/pytorch.simg:2026-02-04 python3 test_model_layers.py
+```
+
+**Run Both Test Suites:**
+```bash
+cd /home/joosep/nmr
+./run_tests.sh
+```
+
 ## Test Coverage
 
-The test suite covers the following components:
+The test suite covers the following components across two test files:
 
-### 1. Peak Parsing Functions
+### test_data_loading.py - Data Loading and Preprocessing Tests
+
+#### 1. Peak Parsing Functions
 - `parse_1H_peaks()` - Tests for 1H NMR peak parsing
   - Single and multiple peaks
   - J-coupling sorting and padding
@@ -77,10 +92,122 @@ The test suite covers the following components:
 - Full pipeline testing with random data generation
 - End-to-end validation of all components working together
 
+### test_model_layers.py - Model Layer Tests
+
+#### 1. Multihead Attention Block (MAB)
+- Forward pass shape validation
+- Numerical stability (no NaN/Inf values)
+- Attention weight validation
+
+#### 2. Induced Set Attention Block (ISAB)
+- Forward pass shape validation
+- Inducing points initialization and expansion
+- Numerical stability
+
+#### 3. Pooling by Multihead Attention (PMA)
+- Forward pass shape validation
+- Seed matrix initialization and expansion
+- Numerical stability
+
+#### 4. NMRTransPretextEncoder
+- Shape validation for both equivariant (Z) and invariant (G) outputs
+- Numerical stability across multiple ISAB layers
+- Correct handling of variable-length inputs
+
+#### 5. NMRModalEncoder
+- Shape validation for 1H (9 features) and 13C (1 feature) inputs
+- Input projection and feature transformation
+- Numerical stability
+
+#### 6. NMRTrans (Full Model)
+- End-to-end shape validation
+- Encoder fusion (concatenation of G_C, Z_C, G_H, Z_H)
+- Numerical stability with various input sizes
+- Padding mask handling
+- Gradient flow validation (all parameters receive gradients)
+- Parameter count validation
+
+Running Data Loading Tests for train_nmr.py
+============================================================
+
+Testing parse_1H_peaks...
+  ✓ Single peak parsing works
+  ✓ Multiple peaks parsing works
+  ✓ J-coupling sorting works
+  ✓ Empty data handling works
+  ✓ String input parsing works
+  ✓ Zero-padding for missing J-couplings works
+✓ All parse_1H_peaks tests passed!
+
+... (more test output) ...
+
+============================================================
+✓ ALL TESTS PASSED!
+============================================================
+```
+=======
 ## Test Output
 
-When tests run successfully, you'll see output like:
+When tests run successfully using the run script, you'll see output like:
 
+```
+==========================================
+Running Data Loading Tests...
+==========================================
+============================================================
+Running Data Loading Tests for train_nmr.py
+============================================================
+
+Testing parse_1H_peaks...
+  ✓ Single peak parsing works
+  ✓ Multiple peaks parsing works
+  ✓ J-coupling sorting works
+  ✓ Empty data handling works
+  ✓ String input parsing works
+  ✓ Zero-padding for missing J-couplings works
+✓ All parse_1H_peaks tests passed!
+
+... (more data loading test output) ...
+
+============================================================
+✓ ALL TESTS PASSED!
+============================================================
+
+==========================================
+Running Model Layer Tests...
+==========================================
+Running model layer tests...
+
+✓ MAB shape test passed
+✓ MAB numerical stability test passed
+✓ MAB attention weights test passed
+✓ ISAB shape test passed
+✓ ISAB inducing points test passed
+✓ PMA shape test passed
+✓ PMA seed matrix test passed
+✓ NMRTransPretextEncoder shape test passed
+✓ NMRTransPretextEncoder numerical stability test passed
+✓ NMRModalEncoder 1H shape test passed
+✓ NMRModalEncoder 13C shape test passed
+✓ NMRModalEncoder numerical stability test passed
+✓ NMRTrans full model shape test passed
+✓ NMRTrans encoder fusion test passed
+✓ NMRTrans numerical stability test passed
+✓ NMRTrans padding handling test passed
+✓ Model gradients test passed (442/442 parameters have gradients)
+✓ Model parameter count test passed
+  Total parameters: 27,247,092
+  Trainable parameters: 27,247,092
+
+✅ All tests passed!
+
+==========================================
+Test Summary
+==========================================
+✓ Data Loading Tests: PASSED
+✓ Model Layer Tests: PASSED
+
+✓✓✓ ALL TESTS PASSED! ✓✓✓
 ```
 ============================================================
 Running Data Loading Tests for train_nmr.py
@@ -151,10 +278,25 @@ def test_new_feature():
 
 ## Continuous Integration
 
-To integrate these tests into a CI/CD pipeline, add a step that runs:
+To integrate these tests into a CI/CD pipeline, you can run:
 
+### Run All Tests
+```bash
+./run_tests.sh
+```
+
+This will run both test suites and provide a summary.
+
+### Run Individual Test Suites
+
+**Data Loading Tests:**
 ```bash
 singularity exec /home/software/singularity/pytorch.simg:2026-02-04 python3 test_data_loading.py
+```
+
+**Model Layer Tests:**
+```bash
+singularity exec /home/software/singularity/pytorch.simg:2026-02-04 python3 test_model_layers.py
 ```
 
 The exit code will indicate success (0) or failure (1).
