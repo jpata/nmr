@@ -3,9 +3,6 @@
 import pandas
 from sklearn.model_selection import train_test_split, KFold
 
-df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
-df = df_big.head(50000)
-
 import torch
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
@@ -16,8 +13,14 @@ import re
 MULT_MAP = {'s': 0, 'd': 1, 't': 2, 'q': 3, 'dd': 4, 'm': 5} # Add others as needed
 
 def parse_1H_peaks(processed_data):
+    if not processed_data:
+        return torch.empty(0, 9)
+
     if isinstance(processed_data, str):
         processed_data = ast.literal_eval(processed_data)
+
+    if not processed_data:
+        return torch.empty(0, 9)
 
     peak_features = []
     for peak in processed_data:
@@ -52,18 +55,41 @@ def parse_1H_peaks(processed_data):
         feature_vector = [shift, integ_val, mult_val] + j_vals
         peak_features.append(feature_vector)
 
+    if not peak_features:
+        return torch.empty(0, 9)
     return torch.tensor(peak_features, dtype=torch.float32)
 
 def parse_13C_peaks(processed_data):
+    if not processed_data:
+        return torch.empty(0, 1)
+
     if isinstance(processed_data, str):
         processed_data = ast.literal_eval(processed_data)
 
+    if not processed_data:
+        return torch.empty(0, 1)
+
     peak_features = []
     for peak in processed_data:
-        shift, _, _ = peak
-        # 13C is fully decoupled, so we generally only care about the chemical shift
-        peak_features.append([float(shift)])
-
+        try:
+            # Expected format: (shift, multiplicity, integration)
+            # shift can be a single value or a list [start, end]
+            shift, _, _ = peak
+            
+            if isinstance(shift, list):
+                # If it's a range, take the midpoint
+                shift_val = sum(float(s) for s in shift) / len(shift)
+            else:
+                shift_val = float(shift)
+                
+            # 13C is fully decoupled, so we generally only care about the chemical shift
+            peak_features.append([shift_val])
+        except Exception as e:
+            print(f"Error parsing 13C peak: {peak}")
+            raise e
+            
+    if not peak_features:
+        return torch.empty(0, 1)
     return torch.tensor(peak_features, dtype=torch.float32)
 
 
@@ -414,7 +440,7 @@ import torch.optim as optim
 # from model import NMRTrans
 # from data import get_dataloader
 
-def train_nmrtrans():
+def train_nmrtrans(df):
     # --- 1. Setup & Hyperparameters ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -534,4 +560,6 @@ def train_nmrtrans():
     print("\n--- Cross-Validation Completed ---")
 
 if __name__ == "__main__":
-    train_nmrtrans()
+    df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
+    df = df_big.head(50000)
+    train_nmrtrans(df)
