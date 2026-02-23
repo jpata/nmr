@@ -741,8 +741,8 @@ def train_nmrtrans_lightning(df):
         model.tokenizer = tokenizer  # Set tokenizer for validation logging
         
         # Callbacks
-        # Save checkpoints under the experiment directory structure
-        checkpoint_dir = f'checkpoints/{experiment_name}/fold_{fold}'
+        # Save checkpoints under the lightning_logs directory structure
+        checkpoint_dir = f'lightning_logs/{experiment_name}/fold_{fold}'
         checkpoint_callback = ModelCheckpoint(
             monitor='val_loss',
             dirpath=checkpoint_dir,
