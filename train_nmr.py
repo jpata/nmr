@@ -737,9 +737,11 @@ def train_nmrtrans_lightning(df):
         model.tokenizer = tokenizer  # Set tokenizer for validation logging
         
         # Callbacks
+        # Save checkpoints under the experiment directory structure
+        checkpoint_dir = f'checkpoints/{experiment_name}/fold_{fold}'
         checkpoint_callback = ModelCheckpoint(
             monitor='val_loss',
-            dirpath=f'checkpoints/fold_{fold}',
+            dirpath=checkpoint_dir,
             filename='nmrtrans-{epoch:02d}-{val_loss:.2f}',
             save_top_k=3,
             mode='min',
@@ -784,5 +786,5 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet").head(100000)
+    df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
     train_nmrtrans_lightning(df_big)
