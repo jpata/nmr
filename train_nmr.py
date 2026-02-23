@@ -475,7 +475,7 @@ class NMRTrans(nn.Module):
 # PyTorch Lightning modules
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
-from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.loggers import TensorBoardLogger
 
 class NMRLightningModule(pl.LightningModule):
     def __init__(self, vocab_size, pad_idx, d_model=256, max_smiles_len=512, learning_rate=1e-4):
@@ -676,11 +676,11 @@ def train_nmrtrans_lightning(df):
         )
         
         # Trainer configuration
-        # Configure CSV logger to track metrics
-        csv_logger = CSVLogger(
-            save_dir="logs",
-            name=f"fold_{fold}",
-            flush_logs_every_n_steps=10
+        # Configure TensorBoard logger to save logs under lightning_logs/experiment_*
+        tb_logger = TensorBoardLogger(
+            save_dir="lightning_logs",
+            name="experiment",
+            version=f"fold_{fold}",
         )
         
         trainer = pl.Trainer(
@@ -690,7 +690,7 @@ def train_nmrtrans_lightning(df):
             callbacks=[checkpoint_callback, early_stopping],
             enable_progress_bar=True,
             log_every_n_steps=10,
-            logger=csv_logger,
+            logger=tb_logger,
         )
         
         # Train the model
@@ -708,5 +708,5 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
+    df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet").head(10000)
     train_nmrtrans_lightning(df_big)
