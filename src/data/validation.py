@@ -4,7 +4,7 @@ import pandas as pd
 import torch
 import ast
 import re
-from train_nmr import parse_1H_peaks, parse_13C_peaks, SMILESTokenizer
+from src.models.nmrtrans import parse_1H_peaks, parse_13C_peaks, SMILESTokenizer
 
 def validate_dataset(df):
     """Validate the dataset for potential issues."""

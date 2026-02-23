@@ -19,7 +19,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 
 # Import the functions we need to test
-from train_nmr import (
+from src.models.nmrtrans import (
     parse_1H_peaks, 
     parse_13C_peaks, 
     NMRDataset, 

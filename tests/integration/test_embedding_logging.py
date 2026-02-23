@@ -9,7 +9,7 @@ import torch
 import sys
 sys.path.insert(0, '/home/joosep/nmr')
 
-from train_nmr import SMILESTokenizer, NMRTrans, NMRLightningModule
+from src.models.nmrtrans import SMILESTokenizer, NMRTrans, NMRLightningModule
 
 def test_embedding_extraction():
     """Test that embeddings can be extracted from the model."""

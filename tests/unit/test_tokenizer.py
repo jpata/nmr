@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch
 import pandas as pd
-from train_nmr import SMILESTokenizer
+from src.models.nmrtrans import SMILESTokenizer
 
 
 def test_tokenizer_basic_functionality():

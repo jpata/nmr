@@ -6,21 +6,21 @@ cd /home/joosep/nmr
 echo "=========================================="
 echo "Running Data Loading Tests..."
 echo "=========================================="
-./wrapper.sh python3 test_data_loading.py
+./wrapper.sh python3 tests/unit/test_data_loading.py
 DATA_LOADING_EXIT=$?
 
 echo ""
 echo "=========================================="
 echo "Running Model Layer Tests..."
 echo "=========================================="
-./wrapper.sh python3 test_model_layers.py
+./wrapper.sh python3 tests/unit/test_model_layers.py
 MODEL_LAYERS_EXIT=$?
 
 echo ""
 echo "=========================================="
 echo "Running Tokenizer Tests..."
 echo "=========================================="
-./wrapper.sh python3 test_tokenizer.py
+./wrapper.sh python3 tests/unit/test_tokenizer.py
 TOKENIZER_EXIT=$?
 
 echo ""

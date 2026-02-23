@@ -9,8 +9,8 @@ import torch.nn as nn
 import numpy as np
 import pytest
 
-# Import the model classes from train_nmr.py
-from train_nmr import MAB, ISAB, PMA, NMRTransPretextEncoder, NMRModalEncoder, NMRTrans
+# Import the model classes from src.models.nmrtrans
+from src.models.nmrtrans import MAB, ISAB, PMA, NMRTransPretextEncoder, NMRModalEncoder, NMRTrans
 
 
 def test_mab_forward_shape():
