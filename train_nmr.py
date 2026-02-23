@@ -117,6 +117,9 @@ class NMRDataset(Dataset):
         # Group by SMILES to collect all available modalities for a single molecule
         self.grouped_df = df.groupby('SMILES')
         self.smiles_list = list(self.grouped_df.groups.keys())
+        # Shuffle the smiles_list to ensure random order
+        import random
+        random.shuffle(self.smiles_list)
 
     def __len__(self):
         return len(self.smiles_list)
@@ -657,10 +660,11 @@ class NMRLightningModule(pl.LightningModule):
                 writer = SummaryWriter(log_dir=log_dir)
                 
                 # Add embeddings to TensorBoard
+                # Use a simpler tag without slashes to avoid URL encoding issues
                 writer.add_embedding(
                     embeddings_np,
                     metadata=labels,
-                    tag=f'validation_embeddings/epoch_{epoch}',
+                    tag=f'validation_embeddings_epoch_{epoch}',
                     global_step=epoch
                 )
                 

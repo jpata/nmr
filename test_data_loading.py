@@ -265,7 +265,7 @@ def test_collate_function():
         tokenizer.encode(item['SMILES'], update_vocab=True)
     
     # Collate the batch
-    collated = nmr_collate_fn(batch)
+    collated = nmr_collate_fn(batch, tokenizer)
     
     # Test case 1: Check shapes
     assert collated['1H'].shape == (2, 1, 9), f"Expected 1H shape (2, 1, 9), got {collated['1H'].shape}"
@@ -306,8 +306,13 @@ def test_dataloader():
     }
     df = pd.DataFrame(data)
     
+    # Initialize tokenizer (needed for dataloader)
+    tokenizer = SMILESTokenizer()
+    for _, row in df.iterrows():
+        tokenizer.encode(row['SMILES'], update_vocab=True)
+    
     # Get dataloader
-    dataloader = get_dataloader(df)
+    dataloader = get_dataloader(df, tokenizer, batch_size=16)
     
     # Test case 1: Check dataloader properties
     assert dataloader.batch_size == 16, f"Expected batch_size 16, got {dataloader.batch_size}"
@@ -446,8 +451,13 @@ def test_integration():
     
     df = pd.DataFrame(data)
     
+    # Initialize tokenizer (needed for dataloader)
+    tokenizer = SMILESTokenizer()
+    for _, row in df.iterrows():
+        tokenizer.encode(row['SMILES'], update_vocab=True)
+    
     # Test full pipeline
-    dataloader = get_dataloader(df)
+    dataloader = get_dataloader(df, tokenizer)
     
     batch_count = 0
     total_samples = 0
