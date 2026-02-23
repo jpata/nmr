@@ -213,6 +213,7 @@ def nmr_collate_fn(batch, tokenizer):
     h1_list = []
     c13_list = []
     smiles_tensors = []
+    smiles_strings = []
 
     for item in batch:
         h1_list.append(item['1H'])
@@ -221,6 +222,9 @@ def nmr_collate_fn(batch, tokenizer):
         # Encode the SMILES string into token IDs
         smiles_encoded = tokenizer.encode(item['SMILES'], update_vocab=False)
         smiles_tensors.append(smiles_encoded)
+        
+        # Also store the original SMILES string for labeling
+        smiles_strings.append(item['SMILES'])
 
     # Pad spectral features (as we did before)
     h1_padded = pad_sequence(h1_list, batch_first=True, padding_value=0.0)
@@ -241,7 +245,8 @@ def nmr_collate_fn(batch, tokenizer):
         '1H_mask': h1_mask,
         '13C': c13_padded,
         '13C_mask': c13_mask,
-        'SMILES_TOKENS': smiles_padded
+        'SMILES_TOKENS': smiles_padded,
+        'SMILES': smiles_strings  # Add SMILES strings for embedding labeling
     }
 
 
@@ -405,11 +410,12 @@ class NMRTrans(nn.Module):
 
         self.fc_out = nn.Linear(d_model, vocab_size)
 
-    def forward(self, h1_x, h1_mask, c13_x, c13_mask, smiles_tgt, smiles_tgt_mask):
+    def forward(self, h1_x, h1_mask, c13_x, c13_mask, smiles_tgt, smiles_tgt_mask, return_embeddings=False):
         """
         h1_x: (Batch, N_H, 9)
         c13_x: (Batch, N_C, 1)
         smiles_tgt: (Batch, L) - shifted right for teacher forcing
+        return_embeddings: If True, return the fused encoder embeddings (H_enc)
         """
         batch_size = h1_x.size(0)
 
@@ -470,6 +476,9 @@ class NMRTrans(nn.Module):
         )
 
         logits = self.fc_out(out)
+        
+        if return_embeddings:
+            return logits, H_enc
         return logits
 
 
@@ -487,8 +496,8 @@ class NMRLightningModule(pl.LightningModule):
         self.criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
         self.tokenizer = None  # Will be set externally
         
-    def forward(self, h1_x, h1_mask, c13_x, c13_mask, smiles_tgt, smiles_tgt_mask):
-        return self.model(h1_x, h1_mask, c13_x, c13_mask, smiles_tgt, smiles_tgt_mask)
+    def forward(self, h1_x, h1_mask, c13_x, c13_mask, smiles_tgt, smiles_tgt_mask, return_embeddings=False):
+        return self.model(h1_x, h1_mask, c13_x, c13_mask, smiles_tgt, smiles_tgt_mask, return_embeddings)
     
     def training_step(self, batch, batch_idx):
         h1_x = batch["1H"]
@@ -548,8 +557,11 @@ class NMRLightningModule(pl.LightningModule):
         # Generate causal mask
         tgt_causal_mask = self.generate_square_subsequent_mask(tgt_seq_len, h1_x.size(0))
         
-        # Forward pass
-        logits = self(h1_x, h1_mask, c13_x, c13_mask, tgt_input, tgt_causal_mask)
+        # Forward pass - get both logits and embeddings for first batch
+        if batch_idx == 0:
+            logits, embeddings = self(h1_x, h1_mask, c13_x, c13_mask, tgt_input, tgt_causal_mask, return_embeddings=True)
+        else:
+            logits = self(h1_x, h1_mask, c13_x, c13_mask, tgt_input, tgt_causal_mask)
         
         # Calculate loss
         logits_flat = logits.reshape(-1, logits.size(-1))
@@ -583,6 +595,11 @@ class NMRLightningModule(pl.LightningModule):
                 print_flush(f"  Pred SMILES:  {pred_smiles}")
                 print_flush()
         
+        # Log embeddings for first batch at each validation epoch
+        if batch_idx == 0:
+            if self.tokenizer and hasattr(self, 'logger') and self.logger:
+                self.log_embeddings(embeddings, batch, self.current_epoch)
+        
         return loss
     
     def configure_optimizers(self):
@@ -596,6 +613,59 @@ class NMRLightningModule(pl.LightningModule):
         # Expand to batch dimension
         mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
         return mask.to(self.device)
+    
+    def log_embeddings(self, embeddings, batch, epoch):
+        """
+        Log embeddings for TensorBoard embedding projector.
+        
+        Args:
+            embeddings: Fused encoder embeddings (H_enc) of shape (batch, seq_len, d_model)
+            batch: The batch dictionary containing SMILES information
+            epoch: Current epoch number
+        """
+        import numpy as np
+        from torch.utils.tensorboard.writer import SummaryWriter
+        
+        # Get SMILES strings for labeling
+        smiles_list = batch['SMILES']
+        
+        # Flatten embeddings and create labels
+        # embeddings shape: (batch, seq_len, d_model)
+        # We'll use the average embedding per sample for visualization
+        batch_size = embeddings.size(0)
+        
+        # Average embeddings across sequence dimension for each sample
+        avg_embeddings = embeddings.mean(dim=1)  # (batch, d_model)
+        
+        # Convert to numpy
+        embeddings_np = avg_embeddings.cpu().detach().numpy()
+        
+        # Create labels
+        labels = [f"{smiles}" for smiles in smiles_list]
+        
+        # Log to TensorBoard
+        if hasattr(self, 'logger') and self.logger:
+            # Get the TensorBoard logger
+            tb_logger = self.logger
+            
+            # Create a summary writer for this specific validation
+            # We'll use the experiment version to create a unique log directory
+            if hasattr(tb_logger, 'experiment') and hasattr(tb_logger.experiment, 'get_logdir'):
+                log_dir = tb_logger.experiment.get_logdir()
+                
+                # Create a writer for embeddings
+                writer = SummaryWriter(log_dir=log_dir)
+                
+                # Add embeddings to TensorBoard
+                writer.add_embedding(
+                    embeddings_np,
+                    metadata=labels,
+                    tag=f'validation_embeddings/epoch_{epoch}',
+                    global_step=epoch
+                )
+                
+                writer.close()
+                print_flush(f"Logged embeddings for epoch {epoch} to TensorBoard")
 
 
 def train_nmrtrans_lightning(df):
@@ -641,7 +711,7 @@ def train_nmrtrans_lightning(df):
     # Split unique SMILES to avoid leakage between modalities of the same molecule
     smiles_unique = df["SMILES"].unique()
     
-    kf = KFold(n_splits=5, shuffle=False, random_state=42)
+    kf = KFold(n_splits=5, shuffle=False)
     
     # --- 2. Cross-Validation Loop ---
     for fold, (train_idx, val_idx) in enumerate(kf.split(smiles_unique)):
@@ -714,5 +784,5 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet").head(10000)
+    df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet").head(100000)
     train_nmrtrans_lightning(df_big)
