@@ -10,6 +10,7 @@ import ast
 import re
 import sys
 import functools
+from datetime import datetime
 
 # Decorator to automatically flush print statements
 def print_flush(*args, **kwargs):
@@ -601,6 +602,11 @@ def train_nmrtrans_lightning(df):
     # --- 1. Setup & Hyperparameters ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    # Generate unique experiment name based on timestamp
+    # Format: exp_YYYYMMDD_HHMM
+    experiment_name = datetime.now().strftime("exp_%Y%m%d_%H%M")
+    print_flush(f"Experiment name: {experiment_name}")
+    
     # --- Build vocabulary first ---
     print_flush("Building vocabulary from training data...")
     
@@ -635,7 +641,7 @@ def train_nmrtrans_lightning(df):
     # Split unique SMILES to avoid leakage between modalities of the same molecule
     smiles_unique = df["SMILES"].unique()
     
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    kf = KFold(n_splits=5, shuffle=False, random_state=42)
     
     # --- 2. Cross-Validation Loop ---
     for fold, (train_idx, val_idx) in enumerate(kf.split(smiles_unique)):
@@ -679,7 +685,7 @@ def train_nmrtrans_lightning(df):
         # Configure TensorBoard logger to save logs under lightning_logs/experiment_*
         tb_logger = TensorBoardLogger(
             save_dir="lightning_logs",
-            name="experiment",
+            name=experiment_name,
             version=f"fold_{fold}",
         )
         
