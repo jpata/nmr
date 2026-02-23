@@ -7,11 +7,12 @@ This script orchestrates the training process using the modular components.
 import pandas as pd
 import torch
 from src.models.nmrtrans import train_nmrtrans_lightning
+from configs.data_paths import DATASET_PATH
 
 def main():
     """Main entry point for training."""
     # Load the dataset
-    df_big = pd.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
+    df_big = pd.read_parquet(DATASET_PATH)
     
     # Start training
     train_nmrtrans_lightning(df_big)

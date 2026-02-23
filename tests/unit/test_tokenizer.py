@@ -294,7 +294,8 @@ def test_tokenizer_with_data_file():
     
     try:
         # Try to load a small sample from the data file
-        df = pd.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
+        from configs.data_paths import DATASET_PATH
+        df = pd.read_parquet(DATASET_PATH)
         df_sample = df.head(100)
         
         # Get unique SMILES from sample

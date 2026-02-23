@@ -120,7 +120,9 @@ def validate_dataset(df):
     print(f"Extreme 13C shift entries: {len(extreme_c13)}")
 
 if __name__ == "__main__":
-    df_big = pd.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
+    from configs.data_paths import DATASET_PATH
+    
+    df_big = pd.read_parquet(DATASET_PATH)
     
     print("=" * 80)
     print("FULL DATASET VALIDATION")

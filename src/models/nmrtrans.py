@@ -790,5 +790,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
+    from configs.data_paths import DATASET_PATH
+    
+    df_big = pandas.read_parquet(DATASET_PATH)
     train_nmrtrans_lightning(df_big)
