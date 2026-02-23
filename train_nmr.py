@@ -8,6 +8,24 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import ast
 import re
+import sys
+import functools
+
+# Decorator to automatically flush print statements
+def print_flush(*args, **kwargs):
+    print(*args, **kwargs)
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+# Also flush after every logging operation
+@functools.wraps(torch.cuda.synchronize)
+def synchronized_flush():
+    torch.cuda.synchronize()
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+# Monkey patch to ensure flushing after CUDA operations
+torch.cuda.synchronize = synchronized_flush
 
 # Vocabulary for multiplicities (1H splitting patterns)
 MULT_MAP = {'s': 0, 'd': 1, 't': 2, 'q': 3, 'dd': 4, 'm': 5} # Add others as needed
@@ -85,7 +103,7 @@ def parse_13C_peaks(processed_data):
             # 13C is fully decoupled, so we generally only care about the chemical shift
             peak_features.append([shift_val])
         except Exception as e:
-            print(f"Error parsing 13C peak: {peak}")
+            print_flush(f"Error parsing 13C peak: {peak}")
             raise e
             
     if not peak_features:
@@ -226,13 +244,13 @@ def nmr_collate_fn(batch, tokenizer):
     }
 
 
-def get_dataloader(df, tokenizer):
+def get_dataloader(df, tokenizer, batch_size=64, shuffle=True):
     dataset = NMRDataset(df)
 
     dataloader = DataLoader(
         dataset,
-        batch_size=16,
-        shuffle=True,
+        batch_size=batch_size,
+        shuffle=shuffle,
         collate_fn=lambda batch: nmr_collate_fn(batch, tokenizer),
         #num_workers=4
     )
@@ -308,7 +326,7 @@ class NMRTransPretextEncoder(nn.Module):
     Unified Set Transformer Encoder outputting both equivariant and invariant representations 
     for different self-supervised pretext tasks.
     """
-    def __init__(self, d_model=256, num_heads=8, num_layers=2, m_inducing_points=32, k_seeds=4):
+    def __init__(self, d_model=256, num_heads=8, num_layers=6, m_inducing_points=32, k_seeds=4):
         super().__init__()
         # Stack of L ISAB layers
         self.isab_layers = nn.ModuleList([
@@ -344,7 +362,7 @@ class NMRTransPretextEncoder(nn.Module):
 
 class NMRModalEncoder(nn.Module):
     """Encodes a single NMR modality into peak-level (Z) and global (G) representations."""
-    def __init__(self, d_input, d_model=256, num_heads=8, num_layers=2, m_inducing=32, k_seeds=4):
+    def __init__(self, d_input, d_model=256, num_heads=8, num_layers=6, m_inducing=32, k_seeds=4):
         super().__init__()
         self.input_proj = nn.Linear(d_input, d_model) # Project raw features to d_model
 
@@ -382,7 +400,7 @@ class NMRTrans(nn.Module):
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=d_model, nhead=8, dim_feedforward=d_model*4, batch_first=True
         )
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=2)
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
 
         self.fc_out = nn.Linear(d_model, vocab_size)
 
@@ -418,56 +436,29 @@ class NMRTrans(nn.Module):
 
         # Check that all token IDs are within vocabulary bounds
         vocab_size = self.smiles_embedding.num_embeddings
-        # print(f"DEBUG: Checking token IDs - vocab_size: {vocab_size}, min: {smiles_tgt.min().item()}, max: {smiles_tgt.max().item()}")
         
         if (smiles_tgt >= vocab_size).any():
             invalid_tokens = smiles_tgt >= vocab_size
-            print(f"ERROR: Found {invalid_tokens.sum()} tokens >= vocab_size!")
-            print(f"Sample invalid tokens: {smiles_tgt[invalid_tokens][:10]}")
+            print_flush(f"ERROR: Found {invalid_tokens.sum()} tokens >= vocab_size!")
+            print_flush(f"Sample invalid tokens: {smiles_tgt[invalid_tokens][:10]}")
             # Clamp to valid range to prevent embedding lookup errors
             smiles_tgt = torch.clamp(smiles_tgt, 0, vocab_size - 1)
         
         if (smiles_tgt < 0).any():
             invalid_tokens = smiles_tgt < 0
-            print(f"ERROR: Found {invalid_tokens.sum()} negative token IDs!")
-            print(f"Sample negative tokens: {smiles_tgt[invalid_tokens][:10]}")
+            print_flush(f"ERROR: Found {invalid_tokens.sum()} negative token IDs!")
+            print_flush(f"Sample negative tokens: {smiles_tgt[invalid_tokens][:10]}")
             raise ValueError("Negative token IDs detected")
         
         # Ensure positions are on the same device as the positional encoding
         positions = positions.to(self.target_pos_enc.weight.device)
-        
-        # DEBUG: Check embedding table size and token indices
-        # print(f"DEBUG: Embedding table size: {self.smiles_embedding.num_embeddings}")
-        # print(f"DEBUG: Token indices range: [{smiles_tgt.min().item()}, {smiles_tgt.max().item()}]")
-        # print(f"DEBUG: Positions range: [{positions.min().item()}, {positions.max().item()}]")
-        # print(f"DEBUG: Position encoding table size: {self.target_pos_enc.num_embeddings}")
-        
-        # Check for any tokens that might be out of bounds
-        if smiles_tgt.max().item() >= self.smiles_embedding.num_embeddings:
-            print(f"ERROR: Token index {smiles_tgt.max().item()} exceeds embedding table size {self.smiles_embedding.num_embeddings}")
-            print(f"All token indices: {smiles_tgt.flatten()[:50]}")  # First 50 tokens
-            raise ValueError("Token index out of bounds")
-        
-        if positions.max().item() >= self.target_pos_enc.num_embeddings:
-            print(f"ERROR: Position index {positions.max().item()} exceeds position encoding table size {self.target_pos_enc.num_embeddings}")
-            raise ValueError("Position index out of bounds")
-        
+
         tgt_emb = self.smiles_embedding(smiles_tgt) + self.target_pos_enc(positions)
         
-        # DEBUG: Check for NaN/Inf after embedding
-        if torch.isnan(tgt_emb).any():
-            print(f"DEBUG: NaN detected in tgt_emb after embedding")
-            print(f"DEBUG: smiles_embedding output stats: min={self.smiles_embedding(smiles_tgt).min()}, max={self.smiles_embedding(smiles_tgt).max()}")
-            print(f"DEBUG: target_pos_enc output stats: min={self.target_pos_enc(positions).min()}, max={self.target_pos_enc(positions).max()}")
-        if torch.isinf(tgt_emb).any():
-            print(f"DEBUG: Inf detected in tgt_emb after embedding")
-
         # Cross-Attention Interface:
         # Notice we do NOT add any positional encodings to H_enc (the memory).
         # This explicitly removes positional bias, ensuring attention weights 
         # depend solely on chemical content compatibility, making it permutation invariant.
-        
-
         
         out = self.decoder(
             tgt=tgt_emb, 
@@ -481,68 +472,137 @@ class NMRTrans(nn.Module):
         return logits
 
 
-import torch.optim as optim
+# PyTorch Lightning modules
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.loggers import CSVLogger
 
-# Tensor shape logging hook
-class TensorShapeLogger:
-    """Hook-based tensor shape logger for debugging."""
+class NMRLightningModule(pl.LightningModule):
+    def __init__(self, vocab_size, pad_idx, d_model=256, max_smiles_len=512, learning_rate=1e-4):
+        super().__init__()
+        self.save_hyperparameters()
+        
+        self.model = NMRTrans(vocab_size=vocab_size, d_model=d_model, max_smiles_len=max_smiles_len)
+        self.criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
+        self.tokenizer = None  # Will be set externally
+        
+    def forward(self, h1_x, h1_mask, c13_x, c13_mask, smiles_tgt, smiles_tgt_mask):
+        return self.model(h1_x, h1_mask, c13_x, c13_mask, smiles_tgt, smiles_tgt_mask)
     
-    def __init__(self, enabled=False):
-        self.enabled = enabled
-        self.hook_handles = []
+    def training_step(self, batch, batch_idx):
+        h1_x = batch["1H"]
+        c13_x = batch["13C"]
+        h1_mask = batch["1H_mask"]
+        c13_mask = batch["13C_mask"]
+        smiles_tokens = batch["SMILES_TOKENS"]
         
-    def enable(self):
-        """Enable tensor shape logging."""
-        self.enabled = True
+        # DEBUG: Check for empty batches
+        if h1_x.size(0) == 0 or c13_x.size(0) == 0:
+            print_flush(f"Warning: Empty batch detected at batch_idx {batch_idx}")
+            return None
         
-    def disable(self):
-        """Disable tensor shape logging."""
-        self.enabled = False
+        # Prepare targets for teacher forcing
+        tgt_input = smiles_tokens[:, :-1]
+        tgt_expected = smiles_tokens[:, 1:]
+        tgt_seq_len = tgt_input.size(1)
         
-    def register_module(self, module, name=None):
-        """Register a module to log input/output shapes."""
-        if name is None:
-            name = module.__class__.__name__
-            
-        def hook_fn(module, input, output):
-            if not self.enabled:
-                return
-            
-            input_shapes = [t.shape if isinstance(t, torch.Tensor) else 'None' for t in input]
-            output_shapes = [t.shape if isinstance(t, torch.Tensor) else 'None' for t in output]
-            
-            print(f"[{name}]")
-            print(f"  Input shapes:  {input_shapes}")
-            print(f"  Output shapes: {output_shapes}")
-            print()
-            
-        handle = module.register_forward_hook(hook_fn)
-        self.hook_handles.append(handle)
+        # Generate causal mask
+        tgt_causal_mask = self.generate_square_subsequent_mask(tgt_seq_len, h1_x.size(0))
         
-    def register_all_modules(self, model):
-        """Register hooks for all modules in a model."""
-        for name, module in model.named_modules():
-            self.register_module(module, name)
+        # Forward pass
+        logits = self(h1_x, h1_mask, c13_x, c13_mask, tgt_input, tgt_causal_mask)
+        
+        # Calculate loss
+        logits_flat = logits.reshape(-1, logits.size(-1))
+        tgt_expected_flat = tgt_expected.reshape(-1)
+        loss = self.criterion(logits_flat, tgt_expected_flat)
+        
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        
+        # Print progress to stdout periodically
+        if batch_idx % 50 == 0:
+            epoch = self.current_epoch
+            step = self.global_step
+            print_flush(f"Epoch {epoch} | Step {step} | Batch {batch_idx} | Train Loss: {loss.item():.4f}")
+        
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        h1_x = batch["1H"]
+        c13_x = batch["13C"]
+        h1_mask = batch["1H_mask"]
+        c13_mask = batch["13C_mask"]
+        smiles_tokens = batch["SMILES_TOKENS"]
+        
+        # DEBUG: Check for empty batches
+        if h1_x.size(0) == 0 or c13_x.size(0) == 0:
+            print_flush(f"Warning: Empty batch detected in validation at batch_idx {batch_idx}")
+            return None
+        
+        # Prepare targets for teacher forcing
+        tgt_input = smiles_tokens[:, :-1]
+        tgt_expected = smiles_tokens[:, 1:]
+        tgt_seq_len = tgt_input.size(1)
+        
+        # Generate causal mask
+        tgt_causal_mask = self.generate_square_subsequent_mask(tgt_seq_len, h1_x.size(0))
+        
+        # Forward pass
+        logits = self(h1_x, h1_mask, c13_x, c13_mask, tgt_input, tgt_causal_mask)
+        
+        # Calculate loss
+        logits_flat = logits.reshape(-1, logits.size(-1))
+        tgt_expected_flat = tgt_expected.reshape(-1)
+        loss = self.criterion(logits_flat, tgt_expected_flat)
+        
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        
+        # Print validation progress
+        if batch_idx == 0:
+            print_flush(f"Validation | Epoch {self.current_epoch} | Val Loss: {loss.item():.4f}")
+        
+        # Print generated vs true SMILES for first few elements of first validation batch
+        if batch_idx == 0 and self.tokenizer:
+            print_flush(f"\n--- Validation Batch {batch_idx} ---")
             
-    def clear_hooks(self):
-        """Remove all registered hooks."""
-        for handle in self.hook_handles:
-            handle.remove()
-        self.hook_handles = []
+            # Generate predictions
+            predictions = logits.argmax(dim=-1)
+            
+            # Decode true and predicted SMILES for first few samples
+            num_samples_to_show = min(3, h1_x.size(0))
+            for i in range(num_samples_to_show):
+                true_tokens = tgt_expected[i]
+                pred_tokens = predictions[i]
+                
+                true_smiles = self.tokenizer.decode(true_tokens)
+                pred_smiles = self.tokenizer.decode(pred_tokens)
+                
+                print_flush(f"Sample {i+1}:")
+                print_flush(f"  True SMILES:  {true_smiles}")
+                print_flush(f"  Pred SMILES:  {pred_smiles}")
+                print_flush()
+        
+        return loss
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.learning_rate)
+        return optimizer
+    
+    def generate_square_subsequent_mask(self, sz, batch_size):
+        """Prevents the decoder from looking ahead at future SMILES tokens."""
+        mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float("-inf")).masked_fill(mask == 1, float(0.0))
+        # Expand to batch dimension
+        mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
+        return mask.to(self.device)
 
-# Global tensor shape logger instance
-tensor_shape_logger = TensorShapeLogger(enabled=False)
 
-# Assume NMRTrans and DataLoader are defined as we discussed previously
-# from model import NMRTrans
-# from data import get_dataloader
-
-def train_nmrtrans(df):
+def train_nmrtrans_lightning(df):
     # --- 1. Setup & Hyperparameters ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    
     # --- Build vocabulary first ---
-    print("Building vocabulary from training data...")
+    print_flush("Building vocabulary from training data...")
     
     # Create a new tokenizer instance for this training run
     tokenizer = SMILESTokenizer()
@@ -563,250 +623,90 @@ def train_nmrtrans(df):
     BOS_IDX = tokenizer.vocab2id[tokenizer.BOS_TOKEN]
     EOS_IDX = tokenizer.vocab2id[tokenizer.EOS_TOKEN]
     
-    print(f"Vocabulary size: {VOCAB_SIZE}")
-    print(f"PAD_IDX: {PAD_IDX}, BOS_IDX: {BOS_IDX}, EOS_IDX: {EOS_IDX}")
-
+    print_flush(f"Vocabulary size: {VOCAB_SIZE}")
+    print_flush(f"PAD_IDX: {PAD_IDX}, BOS_IDX: {BOS_IDX}, EOS_IDX: {EOS_IDX}")
+    
     # Print the vocabulary
-    print("\nVocabulary:")
+    print_flush("\nVocabulary:")
     for token_id, token in sorted(tokenizer.id2vocab.items()):
-        print(f"  {token_id}: {token}")
-
-    # Cross-entropy loss, ignoring the padding tokens [cite: 254]
-    criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
-
+        print_flush(f"  {token_id}: {token}")
+    
     # --- Cross-Validation Setup ---
     # Split unique SMILES to avoid leakage between modalities of the same molecule
     smiles_unique = df["SMILES"].unique()
     
-    # Optional: Initial train/validation split using sklearn
-    # train_val_smiles, test_smiles = train_test_split(smiles_unique, test_size=0.1, random_state=42)
-    
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
-
-    # --- 2. Causal Masking Helper ---
-    def generate_square_subsequent_mask(sz, batch_size):
-        """Prevents the decoder from looking ahead at future SMILES tokens."""
-        mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float("-inf")).masked_fill(mask == 1, float(0.0))
-        # Expand to batch dimension
-        mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
-        return mask.to(device)
-
-    # --- 3. Cross-Validation Loop ---
+    
+    # --- 2. Cross-Validation Loop ---
     for fold, (train_idx, val_idx) in enumerate(kf.split(smiles_unique)):
-        print(f"\n--- Starting Fold {fold + 1}/5 ---")
+        print_flush(f"\n--- Starting Fold {fold + 1}/5 ---")
         
         train_smiles = smiles_unique[train_idx]
         val_smiles = smiles_unique[val_idx]
-
+        
         train_df = df[df["SMILES"].isin(train_smiles)]
         val_df = df[df["SMILES"].isin(val_smiles)]
-
-        train_loader = get_dataloader(train_df, tokenizer)
-        val_loader = get_dataloader(val_df, tokenizer)
-
-        # Initialize model and optimizer for each fold
-        # Increase max_smiles_len to accommodate longer sequences (found up to 167 tokens)
-        model = NMRTrans(vocab_size=VOCAB_SIZE, max_smiles_len=200).to(device)
-        optimizer = optim.AdamW(model.parameters(), lr=1e-4)
         
-        # Register tensor shape logging hooks (optional - enable with tensor_shape_logger.enable())
-        tensor_shape_logger.register_all_modules(model)
+        train_loader = get_dataloader(train_df, tokenizer, batch_size=64, shuffle=True)
+        val_loader = get_dataloader(val_df, tokenizer, batch_size=64, shuffle=False)
+        
+        # Initialize Lightning module
+        model = NMRLightningModule(
+            vocab_size=VOCAB_SIZE,
+            pad_idx=PAD_IDX,
+            d_model=256,
+            max_smiles_len=512,
+            learning_rate=1e-4
+        )
+        model.tokenizer = tokenizer  # Set tokenizer for validation logging
+        
+        # Callbacks
+        checkpoint_callback = ModelCheckpoint(
+            monitor='val_loss',
+            dirpath=f'checkpoints/fold_{fold}',
+            filename='nmrtrans-{epoch:02d}-{val_loss:.2f}',
+            save_top_k=3,
+            mode='min',
+        )
+        
+        early_stopping = EarlyStopping(
+            monitor='val_loss',
+            patience=5,
+            mode='min'
+        )
+        
+        # Trainer configuration
+        # Configure CSV logger to track metrics
+        csv_logger = CSVLogger(
+            save_dir="logs",
+            name=f"fold_{fold}",
+            flush_logs_every_n_steps=10
+        )
+        
+        trainer = pl.Trainer(
+            max_epochs=50,
+            accelerator='gpu' if torch.cuda.is_available() else 'cpu',
+            devices=1 if torch.cuda.is_available() else 1,  # Use 1 device (GPU or CPU)
+            callbacks=[checkpoint_callback, early_stopping],
+            enable_progress_bar=True,
+            log_every_n_steps=10,
+            logger=csv_logger,
+        )
+        
+        # Train the model
+        trainer.fit(model, train_loader, val_loader)
+        
+        print_flush(f"Fold {fold+1} completed!")
+    
+    print_flush("\n--- Cross-Validation Completed ---")
 
-        num_epochs = 10
-
-        for epoch in range(num_epochs):
-            # --- Training Phase ---
-            model.train()
-            epoch_train_loss = 0.0
-
-            for batch_idx, batch in enumerate(train_loader):
-                h1_x = batch["1H"].to(device)
-                c13_x = batch["13C"].to(device)
-                h1_mask = (h1_x.sum(dim=-1) == 0).to(device)
-                c13_mask = (c13_x.sum(dim=-1) == 0).to(device)
-                smiles_tokens = batch["SMILES_TOKENS"].to(device)
-                batch_size = smiles_tokens.size(0)
-
-                # DEBUG: Check for empty batches
-                if h1_x.size(0) == 0 or c13_x.size(0) == 0:
-                    print(f"Warning: Empty batch detected at batch_idx {batch_idx}")
-                    continue
-
-                # DEBUG: Check tensor shapes
-                # if batch_idx == 0 or batch_idx % 10 == 0:
-                #     print(f"Batch {batch_idx}: h1_x shape: {h1_x.shape}, c13_x shape: {c13_x.shape}, smiles_tgt shape: {smiles_tokens.shape}")
-                #     print(f"Batch {batch_idx}: h1_mask shape: {h1_mask.shape}, c13_mask shape: {c13_mask.shape}")
-                #     print(f"Batch {batch_idx}: Device - h1_x: {h1_x.device}, c13_x: {c13_x.device}, smiles_tokens: {smiles_tokens.device}")
-
-                # DEBUG: Check for NaN/Inf in inputs
-                if torch.isnan(h1_x).any():
-                    print(f"NaN detected in h1_x at batch {batch_idx}")
-                    print(f"h1_x stats: min={h1_x.min()}, max={h1_x.max()}")
-                    break
-                if torch.isinf(h1_x).any():
-                    print(f"Inf detected in h1_x at batch {batch_idx}")
-                    break
-                if torch.isnan(c13_x).any():
-                    print(f"NaN detected in c13_x at batch {batch_idx}")
-                    print(f"c13_x stats: min={c13_x.min()}, max={c13_x.max()}")
-                    break
-                if torch.isinf(c13_x).any():
-                    print(f"Inf detected in c13_x at batch {batch_idx}")
-                    break
-                if torch.isnan(smiles_tokens).any():
-                    print(f"NaN detected in smiles_tokens at batch {batch_idx}")
-                    break
-                if torch.isinf(smiles_tokens).any():
-                    print(f"Inf detected in smiles_tokens at batch {batch_idx}")
-                    break
-
-                tgt_input = smiles_tokens[:, :-1]
-                tgt_expected = smiles_tokens[:, 1:]
-                tgt_seq_len = tgt_input.size(1)
-                tgt_causal_mask = generate_square_subsequent_mask(tgt_seq_len, batch_size)
-
-                optimizer.zero_grad()
-                logits = model(
-                    h1_x=h1_x,
-                    h1_mask=h1_mask,
-                    c13_x=c13_x,
-                    c13_mask=c13_mask,
-                    smiles_tgt=tgt_input,
-                    smiles_tgt_mask=tgt_causal_mask
-                )
-
-                # DEBUG: Check for NaN/Inf in logits
-                if torch.isnan(logits).any():
-                    print(f"NaN detected in logits at batch {batch_idx}")
-                    print(f"logits stats: min={logits.min()}, max={logits.max()}")
-                    break
-                if torch.isinf(logits).any():
-                    print(f"Inf detected in logits at batch {batch_idx}")
-                    break
-
-                logits_flat = logits.reshape(-1, logits.size(-1))
-                tgt_expected_flat = tgt_expected.reshape(-1)
-                loss = criterion(logits_flat, tgt_expected_flat)
-                
-                loss.backward()
-                
-                # Check for NaN gradients
-                has_nan = False
-                for name, param in model.named_parameters():
-                    if param.grad is not None and torch.isnan(param.grad).any():
-                        print(f"NaN gradient detected in {name}")
-                        has_nan = True
-                        break
-                
-                if has_nan:
-                    print("Stopping training due to NaN gradients")
-                    break
-                
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-
-                epoch_train_loss += loss.item()
-
-            # --- Validation Phase ---
-            model.eval()
-            epoch_val_loss = 0.0
-            with torch.no_grad():
-                for batch_idx, batch in enumerate(val_loader):
-                    h1_x = batch["1H"].to(device)
-                    c13_x = batch["13C"].to(device)
-                    h1_mask = (h1_x.sum(dim=-1) == 0).to(device)
-                    c13_mask = (c13_x.sum(dim=-1) == 0).to(device)
-                    smiles_tokens = batch["SMILES_TOKENS"].to(device)
-                    batch_size = smiles_tokens.size(0)
-
-                    # DEBUG: Check for empty batches
-                    if h1_x.size(0) == 0 or c13_x.size(0) == 0:
-                        print(f"Warning: Empty batch detected in validation at batch_idx {batch_idx}")
-                        continue
-
-                    # DEBUG: Check for NaN/Inf in inputs
-                    if torch.isnan(h1_x).any():
-                        print(f"NaN detected in validation h1_x at batch {batch_idx}")
-                        break
-                    if torch.isinf(h1_x).any():
-                        print(f"Inf detected in validation h1_x at batch {batch_idx}")
-                        break
-                    if torch.isnan(c13_x).any():
-                        print(f"NaN detected in validation c13_x at batch {batch_idx}")
-                        break
-                    if torch.isinf(c13_x).any():
-                        print(f"Inf detected in validation c13_x at batch {batch_idx}")
-                        break
-
-                    tgt_input = smiles_tokens[:, :-1]
-                    tgt_expected = smiles_tokens[:, 1:]
-                    tgt_seq_len = tgt_input.size(1)
-                    tgt_causal_mask = generate_square_subsequent_mask(tgt_seq_len, batch_size)
-
-                    logits = model(
-                        h1_x=h1_x,
-                        h1_mask=h1_mask,
-                        c13_x=c13_x,
-                        c13_mask=c13_mask,
-                        smiles_tgt=tgt_input,
-                        smiles_tgt_mask=tgt_causal_mask
-                    )
-
-                    # DEBUG: Check for NaN/Inf in logits
-                    if torch.isnan(logits).any():
-                        print(f"NaN detected in validation logits at batch {batch_idx}")
-                        break
-                    if torch.isinf(logits).any():
-                        print(f"Inf detected in validation logits at batch {batch_idx}")
-                        break
-
-                    logits_flat = logits.reshape(-1, logits.size(-1))
-                    tgt_expected_flat = tgt_expected.reshape(-1)
-                    loss = criterion(logits_flat, tgt_expected_flat)
-                    epoch_val_loss += loss.item()
-
-                    # Print generated vs true SMILES for first few elements of first validation batch
-                    if batch_idx == 0:
-                        print(f"\n--- Validation Batch {batch_idx} (Epoch {epoch+1}) ---")
-                        
-                        # Generate predictions
-                        predictions = logits.argmax(dim=-1)
-                        
-                        # Decode true and predicted SMILES for first few samples
-                        num_samples_to_show = min(3, batch_size)
-                        for i in range(num_samples_to_show):
-                            true_tokens = tgt_expected[i]
-                            pred_tokens = predictions[i]
-                            
-                            true_smiles = tokenizer.decode(true_tokens)
-                            pred_smiles = tokenizer.decode(pred_tokens)
-                            
-                            print(f"Sample {i+1}:")
-                            print(f"  True SMILES:  {true_smiles}")
-                            print(f"  Pred SMILES:  {pred_smiles}")
-                            print()
-
-            print(f"Fold {fold+1} | Epoch {epoch+1} | Train Loss: {epoch_train_loss/len(train_loader):.4f} | Val Loss: {epoch_val_loss/len(val_loader):.4f}")
-
-    print("\n--- Cross-Validation Completed ---")
 
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Train NMRTrans model")
-    parser.add_argument("--debug-shapes", action="store_true", 
-                       help="Enable tensor shape logging at each step")
+    parser = argparse.ArgumentParser(description="Train NMRTrans model with PyTorch Lightning")
     
     args = parser.parse_args()
     
-    # Enable tensor shape logging if debug flag is set
-    if args.debug_shapes:
-        tensor_shape_logger.enable()
-        print("Tensor shape logging ENABLED")
-    else:
-        tensor_shape_logger.disable()
-    
     df_big = pandas.read_parquet("/home/joosep/17296666/NMRexp_10to24_1_1004_sc_less_than_1.parquet")
-    df = df_big.head(10000)
-    train_nmrtrans(df)
+    train_nmrtrans_lightning(df_big)

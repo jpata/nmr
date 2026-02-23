@@ -1,28 +1,26 @@
 #!/bin/bash
 # Script to run all tests inside singularity container
 
-IMG="/home/software/singularity/pytorch.simg:2026-02-04"
-
 cd /home/joosep/nmr
 
 echo "=========================================="
 echo "Running Data Loading Tests..."
 echo "=========================================="
-singularity exec --nv $IMG python3 test_data_loading.py
+./wrapper.sh python3 test_data_loading.py
 DATA_LOADING_EXIT=$?
 
 echo ""
 echo "=========================================="
 echo "Running Model Layer Tests..."
 echo "=========================================="
-singularity exec --nv $IMG python3 test_model_layers.py
+./wrapper.sh python3 test_model_layers.py
 MODEL_LAYERS_EXIT=$?
 
 echo ""
 echo "=========================================="
 echo "Running Tokenizer Tests..."
 echo "=========================================="
-singularity exec --nv $IMG python3 test_tokenizer.py
+./wrapper.sh python3 test_tokenizer.py
 TOKENIZER_EXIT=$?
 
 echo ""
